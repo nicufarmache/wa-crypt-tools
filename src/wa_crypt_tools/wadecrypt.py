@@ -102,17 +102,21 @@ def chunked_decrypt(file_hash, cipher, encrypted, decrypted, buffer_size: int = 
             log.info("Invalid buffer size, will use default of {}".format(io.DEFAULT_BUFFER_SIZE))
             buffer_size = io.DEFAULT_BUFFER_SIZE
 
-            # Does the thing above but only with DEFAULT_BUFFER_SIZE bytes at a time.
-            # Less RAM used, more I/O used
+        # Does the thing above but only with DEFAULT_BUFFER_SIZE bytes at a time.
+        # Less RAM used, more I/O used
 
-            is_zip = True
+        is_zip = True
 
-            chunk = encrypted.read(buffer_size)
+        # Read the first data chunk (there must be at least one, otherwise the
+        # encrypted file is clearly malformed).
+        chunk = encrypted.read(buffer_size)
 
-            log.debug("Reading and decrypting...")
+        log.debug("Reading and decrypting...")
 
-            while next_chunk := encrypted.read(buffer_size):
-
+        if not chunk:
+            log.error("Encrypted file is empty or truncated.")
+        else:
+            while True:
                 # We will need to manage two chunks at a time, because we might have
                 # the checksum in both the last chunk and the chunk before that.
                 # This makes the logic more complicated, but it's the only way to.
@@ -123,6 +127,7 @@ def chunked_decrypt(file_hash, cipher, encrypted, decrypted, buffer_size: int = 
                     next_chunk = encrypted.read(buffer_size)
                 except MemoryError:
                     log.fatal("Out of RAM, please use a smaller buffer size.")
+                    break
 
                 if len(next_chunk) <= 36:
                     # Last bytes read. Three cases:
@@ -152,7 +157,7 @@ def chunked_decrypt(file_hash, cipher, encrypted, decrypted, buffer_size: int = 
                             log.info("Decrypted data is a ZIP file that I will not decompress automatically.")
                         else:
                             log.error("I can't recognize decrypted data. Decryption not successful.\n    "
-                                    "The key probably does not match with the encrypted file.")
+                                      "The key probably does not match with the encrypted file.")
                         is_zip = False
                         decrypted.write(decrypted_chunk)
                 else:
@@ -199,13 +204,19 @@ def chunked_decrypt(file_hash, cipher, encrypted, decrypted, buffer_size: int = 
                             cipher.verify(checksum[:16])
                     except ValueError as e:
                         log.error("Authentication tag mismatch: {}."
-                                "\n    This probably means your backup is corrupted.".format(e))
+                                  "\n    This probably means your backup is corrupted.".format(e))
                     break
 
+                # If there is no more data, we should already have seen a checksum.
+                if not next_chunk:
+                    log.error("The encrypted database file is truncated (no checksum found).")
+                    break
+
+                # Move the sliding window forward.
                 chunk = next_chunk
 
-            if is_zip and not z_obj.eof:
-                log.error("The encrypted database file is truncated (damaged).")
+        if is_zip and (not no_decompress) and not z_obj.eof:
+            log.error("The encrypted database file is truncated (damaged).")
 
         decrypted.flush()
 
